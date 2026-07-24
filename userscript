@@ -1,0 +1,337 @@
+// ==UserScript==
+// @name         GeoFS AI (GPT) ATC Addon
+// @namespace    https://avramovic.info/
+// @version      1.5.0
+// @description  AI ATC for GeoFS with blocked keybinds, scalable UI, pilot voice feedback, and a UI toggle button.
+// @author       Nemanja Avramovic & AI Refiner
+// @license      MIT
+// @match        https://geo-fs.com/geofs.php*
+// @match        https://*.geo-fs.com/geofs.php*
+// @icon         https://www.google.com/s2/favicons?sz=64&domain=geo-fs.com
+// @grant        GM_getResourceText
+// @grant        GM_getResourceURL
+// @resource     airports https://raw.githubusercontent.com/avramovic/geofs-ai-atc/master/airports.json
+// @resource     radiostatic https://raw.githubusercontent.com/avramovic/geofs-ai-atc/master/radio-static.mp3
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    // 1. 注入 PuterJS 异步库
+    const head = document.querySelector('head');
+    if (head) {
+        const puterJS = document.createElement('script');
+        puterJS.src = 'https://js.puter.com/v2/';
+        head.appendChild(puterJS);
+    }
+
+    // 2. 加载资源
+    let airports = {};
+    try {
+        let data = GM_getResourceText("airports");
+        if (data) airports = JSON.parse(data);
+    } catch(e) {
+        console.error("Failed to parse airport database", e);
+    }
+
+    let radiostatic;
+    try {
+        let url = GM_getResourceURL("radiostatic");
+        if (url) {
+            radiostatic = new Audio(url);
+            radiostatic.loop = false;
+        }
+    } catch(e) {
+        console.error("Failed to load radio static sound", e);
+    }
+
+    let tunedInAtc = null;
+    let controllers = {};
+    let context = {};
+
+    // 3. 创建外部独立聊天框 UI 与切换按钮
+    function createFloatingATCWindow() {
+        if (document.getElementById('geofs-ai-atc-panel')) return;
+
+        // 创建主面板
+        const panel = document.createElement('div');
+        panel.id = 'geofs-ai-atc-panel';
+        panel.style = `
+            position: absolute; top: 120px; right: 20px; width: 320px; height: 350px; min-width: 260px; min-height: 250px;
+            background: rgba(25, 25, 25, 0.9); color: #FFF; font-family: 'Courier New', monospace;
+            border: 2px solid #333; border-radius: 8px; z-index: 10005; box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+            display: flex; flex-direction: column; overflow: hidden; resize: both;
+        `;
+
+        // 面板头部（支持拖拽）
+        const header = document.createElement('div');
+        header.id = 'geofs-ai-atc-header';
+        header.style = `
+            background: #111; padding: 10px; cursor: move; font-weight: bold; font-size: 13px;
+            border-bottom: 2px solid #333; display: flex; justify-content: space-between; align-items: center;
+            color: #00ff00; letter-spacing: 1px; flex-shrink: 0; user-select: none;
+        `;
+        header.innerHTML = `<span>📻 AI ATC RADIO</span><span id="atc-freq-display" style="color:#aaa; font-size:11px;">[UNTUNED]</span>`;
+        panel.appendChild(header);
+
+        // 聊天记录滚动区（高度自适应）
+        const log = document.createElement('div');
+        log.id = 'atc-chat-log';
+        log.style = `
+            flex-grow: 1; overflow-y: auto; padding: 10px; font-size: 12px;
+            background: rgba(10, 10, 10, 0.6); border-bottom: 1px solid #333; line-height: 1.4;
+        `;
+        log.innerHTML = `<div style="color: #777;">* Set frequency to contact local tower *</div>`;
+        panel.appendChild(log);
+
+        // 控制区（固定的底部组件）
+        const controls = document.createElement('div');
+        controls.style = `padding: 10px; display: flex; flex-direction: column; gap: 8px; background: #1a1a1a; flex-shrink: 0;`;
+        controls.innerHTML = `
+            <div style="display: flex; gap: 5px;">
+                <button id="atc-btn-tune" style="background: #444; color: #fff; border: 1px solid #555; padding: 5px; cursor: pointer; font-size: 11px; flex: 1; border-radius: 4px;">TUNE FREQ</button>
+                <button id="atc-btn-mic" style="background: #0055ff; color: #fff; border: none; padding: 5px; cursor: pointer; font-size: 11px; flex: 1; border-radius: 4px; font-weight: bold;">🎤 PTT (VOICE)</button>
+            </div>
+            <div style="display: flex; gap: 5px;">
+                <input id="atc-msg-input" type="text" placeholder="Type text transmission..." style="flex-grow: 1; background: #222; color: #00ff00; border: 1px solid #444; padding: 6px; font-size: 12px; border-radius: 4px; width: 10px;">
+                <button id="atc-btn-send" style="background: #00aa55; color: #fff; border: none; padding: 0 12px; cursor: pointer; font-size: 11px; border-radius: 4px; font-weight: bold;">TX</button>
+            </div>
+        `;
+        panel.appendChild(controls);
+        document.body.appendChild(panel);
+
+        // ✨ 新增：创建 UI 切换/隐藏控制按钮
+        const toggleBtn = document.createElement('button');
+        toggleBtn.id = 'geofs-ai-atc-toggle';
+        toggleBtn.style = `
+            position: absolute; top: 80px; right: 20px; padding: 6px 12px;
+            background: rgba(20, 20, 20, 0.9); color: #00ff00; font-family: 'Courier New', monospace;
+            border: 2px solid #444; border-radius: 6px; z-index: 10006; cursor: pointer;
+            font-size: 11px; font-weight: bold; box-shadow: 0 2px 8px rgba(0,0,0,0.6);
+            letter-spacing: 0.5px; transition: background 0.2s;
+        `;
+        toggleBtn.innerText = "📻 TOGGLE ATC";
+        toggleBtn.onmouseover = () => { toggleBtn.style.background = "#222"; };
+        toggleBtn.onmouseout = () => { toggleBtn.style.background = "rgba(20, 20, 20, 0.9)"; };
+        document.body.appendChild(toggleBtn);
+
+        // 切换按钮的显示隐藏逻辑
+        toggleBtn.addEventListener('click', () => {
+            if (panel.style.display === 'none') {
+                panel.style.display = 'flex';
+            } else {
+                panel.style.display = 'none';
+            }
+        });
+
+        // 让窗口可以拖动
+        dragElement(panel, header);
+
+        // 获取输入框元素
+        const msgInput = document.getElementById('atc-msg-input');
+
+        // 阻止键盘事件冒泡到 GeoFS 游戏本体
+        const blockPropagation = (e) => { e.stopPropagation(); };
+        msgInput.addEventListener('keydown', blockPropagation);
+        msgInput.addEventListener('keyup', blockPropagation);
+        msgInput.addEventListener('keypress', blockPropagation);
+
+        // 绑定常规事件
+        document.getElementById('atc-btn-tune').addEventListener('click', tuneFrequency);
+        document.getElementById('atc-btn-mic').addEventListener('click', startVoiceRecognition);
+        document.getElementById('atc-btn-send').addEventListener('click', sendTextTransmission);
+        msgInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendTextTransmission(); });
+    }
+
+    // 4. UI 拖拽逻辑
+    function dragElement(elmnt, header) {
+        let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
+        header.onmousedown = dragMouseDown;
+        function dragMouseDown(e) {
+            if (e.offsetX > header.clientWidth - 10 && e.offsetY > header.clientHeight - 10) return;
+            e = e || window.event; e.preventDefault();
+            pos3 = e.clientX; pos4 = e.clientY;
+            document.onmouseup = closeDragElement;
+            document.onmousemove = elementDrag;
+        }
+        function elementDrag(e) {
+            e = e || window.event; e.preventDefault();
+            pos1 = pos3 - e.clientX; pos2 = pos4 - e.clientY;
+            pos3 = e.clientX; pos4 = e.clientY;
+            elmnt.style.top = (elmnt.offsetTop - pos2) + "px";
+            elmnt.style.left = (elmnt.offsetLeft - pos1) + "px";
+        }
+        function closeDragElement() { document.onmouseup = null; document.onmousemove = null; }
+    }
+
+    // 5. 日志与消息显示
+    function logToBox(sender, text, color = "#fff") {
+        const log = document.getElementById('atc-chat-log');
+        if (log) {
+            log.innerHTML += `<div style="margin-bottom: 6px; color: ${color}"><strong>${sender}:</strong> ${text}</div>`;
+            log.scrollTop = log.scrollHeight;
+        }
+    }
+
+    // 6. 核心业务逻辑
+    function tuneFrequency() {
+        let nearestAp = findNearestAirport();
+        let defCode = nearestAp ? nearestAp.code : "KJFK";
+        let apCode = prompt('Enter airport ICAO code:', defCode);
+
+        if (apCode) {
+            apCode = apCode.toUpperCase();
+            if (typeof unsafeWindow.geofs.mainAirportList[apCode] === 'undefined') {
+                logToBox("SYSTEM", `Airport ${apCode} not found!`, "#ff3333");
+            } else {
+                tunedInAtc = apCode;
+                document.getElementById('atc-freq-display').innerText = `[${apCode}]`;
+                logToBox("SYSTEM", `Radio linked to ${apCode} Operations.`, "#00ff00");
+                initController(apCode);
+            }
+        }
+    }
+
+    function sendTextTransmission() {
+        const input = document.getElementById('atc-msg-input');
+        let text = input.value.trim();
+        if (!text) return;
+        input.value = '';
+        if (!tunedInAtc) { logToBox("SYSTEM", "No frequency set. Tune in first.", "#ff3333"); return; }
+        
+        pilotSpeak(text);
+        callAtc(text);
+    }
+
+    function startVoiceRecognition() {
+        if (!tunedInAtc) { logToBox("SYSTEM", "No frequency set. Tune in first.", "#ff3333"); return; }
+
+        navigator.mediaDevices.getUserMedia({ audio: true }).then(() => {
+            let SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SpeechRecognition) { logToBox("SYSTEM", "Voice not supported in this browser.", "#ff3333"); return; }
+
+            let recognition = new SpeechRecognition();
+            recognition.continuous = false;
+            recognition.lang = 'en-US';
+
+            logToBox("RADIO", "Transmitter open... Speak now.", "#aaa");
+            recognition.start();
+
+            recognition.onresult = (event) => {
+                let pilotMsg = event.results[0][0].transcript;
+                if (pilotMsg) {
+                    pilotSpeak(pilotMsg);
+                    callAtc(pilotMsg);
+                }
+            };
+            recognition.onerror = (err) => { logToBox("RADIO", "Static/Error: " + err.error, "#ff3333"); };
+        }).catch(() => { logToBox("SYSTEM", "Mic access denied.", "#ff3333"); });
+    }
+
+    // 7. 测距与气象导航公式
+    function haversine(lat1, lon1, lat2, lon2) {
+        const R = 6371; const toRad = (deg) => deg * (Math.PI / 180);
+        const dLat = toRad(lat2 - lat1); const dLon = toRad(lon2 - lon1);
+        const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+        return (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) * R) / 1.852;
+    }
+
+    function findNearestAirport() {
+        let nearestAirport = null; let minDistance = Infinity;
+        if(!unsafeWindow.geofs || !unsafeWindow.geofs.mainAirportList) return null;
+        for (let apCode in unsafeWindow.geofs.mainAirportList) {
+            let distance = findAirportDistance(apCode);
+            if (distance < minDistance) { minDistance = distance; nearestAirport = { code: apCode, distance: distance }; }
+        }
+        return nearestAirport;
+    }
+
+    function findAirportDistance(code) {
+        let lastLla = unsafeWindow.geofs.aircraft.instance.lastLlaLocation;
+        let ap = unsafeWindow.geofs.mainAirportList[code];
+        return haversine(lastLla[0], lastLla[1], ap[0], ap[1]);
+    }
+
+    function initController(apCode) {
+        if (!controllers[apCode]) {
+            let seedDate = new Date().toISOString().split('T')[0];
+            fetch(`https://randomuser.me/api/?gender=male&seed=${apCode}-${seedDate}`)
+                .then(res => res.json())
+                .then(json => { controllers[apCode] = json.results[0]; })
+                .catch(() => { controllers[apCode] = { name: { first: "Tower", last: "Controller" } }; });
+        }
+    }
+
+    // 语音系统合成核心
+    function atcSpeak(text) {
+        let msg = new SpeechSynthesisUtterance(text);
+        let voices = window.speechSynthesis.getVoices();
+        if(voices.length > 0) msg.voice = voices[0];
+        window.speechSynthesis.speak(msg);
+    }
+
+    function pilotSpeak(text) {
+        let msg = new SpeechSynthesisUtterance(text);
+        let voices = window.speechSynthesis.getVoices();
+        if(voices.length > 0) {
+            msg.voice = voices[1] || voices[0];
+        }
+        window.speechSynthesis.speak(msg);
+    }
+
+    // 8. AI 请求封装
+    function callAtc(pilotMsg) {
+        let distance = findAirportDistance(tunedInAtc);
+        let controller = controllers[tunedInAtc] || { name: { first: "Air", last: "Traffic" } };
+
+        if (distance > 50) {
+            if (radiostatic) { try { radiostatic.play(); } catch(e){} }
+            logToBox("RADIO", `* Radio Static * Out of Range (${distance.toFixed(1)} NM)`, "#ff3333");
+            return;
+        }
+
+        let airplaneName = unsafeWindow.geofs.aircraft.instance.aircraftRecord.name;
+        let callsign = unsafeWindow.geofs.userRecord?.id !== 0 ? unsafeWindow.geofs.userRecord.callsign : "Pilot";
+
+        logToBox(`${airplaneName} (${callsign})`, pilotMsg, "#33ff33");
+
+        let apPos = unsafeWindow.geofs.mainAirportList[tunedInAtc];
+
+        if (!context[tunedInAtc]) {
+            let systemIntro = `You are ${controller.name.first || 'Tower'}, an ATC controller at ${tunedInAtc}. Location: ${apPos[0]}, ${apPos[1]}. ` +
+                              `Respond to the pilot using professional, short aviation dialogue. Be concise (1-2 sentences). ` +
+                              `Do not use markdown formatting like bold asterisks.`;
+            context[tunedInAtc] = [{ content: systemIntro, role: 'system' }];
+        }
+
+        let animation = unsafeWindow.geofs.animation.values;
+        let onGround = animation.groundContact === 1 ? 'on the ground' : 'in the air';
+        let speedString = animation.groundContact === 1 ? `taxiing at ${Math.round(animation.kias)} kts` : `flying at ${Math.round(animation.kias)} kts, heading ${Math.round(animation.heading360)}`;
+        let positionContext = `[Aircraft: ${onGround}, Speed/Hdg: ${speedString}, Alt: ${Math.round(animation.altitude)}ft. Distance: ${distance.toFixed(1)} NM. Wind: ${animation.windSpeedLabel}].`;
+
+        if (context[tunedInAtc].length >= 6) { context[tunedInAtc].splice(1, 2); }
+        context[tunedInAtc].push({ content: positionContext, role: 'system' });
+        context[tunedInAtc].push({ content: pilotMsg, role: 'user' });
+
+        if (typeof puter !== 'undefined' && puter.ai) {
+            puter.ai.chat(context[tunedInAtc]).then((resp) => {
+                let responseText = resp.message ? resp.message.content : resp;
+                context[tunedInAtc].push({ content: responseText, role: 'assistant' });
+
+                logToBox(`${tunedInAtc} ATC`, responseText, "#ffcc00");
+                atcSpeak(responseText);
+            }).catch(() => { logToBox("SYSTEM", "Puter AI Engine Connection Error.", "#ff3333"); });
+        } else {
+            logToBox("SYSTEM", "Waiting for PuterJS Core...", "#ff9900");
+        }
+    }
+
+    // 9. 循环检测初始化
+    let checkInterval = setInterval(() => {
+        if (typeof unsafeWindow.geofs !== 'undefined' && unsafeWindow.geofs.aircraft && unsafeWindow.geofs.aircraft.instance) {
+            clearInterval(checkInterval);
+            createFloatingATCWindow();
+        }
+    }, 2000);
+
+})();
