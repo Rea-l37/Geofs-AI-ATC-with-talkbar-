@@ -17,7 +17,6 @@
 (function() {
     'use strict';
 
-    // 1. 注入 PuterJS 异步库
     const head = document.querySelector('head');
     if (head) {
         const puterJS = document.createElement('script');
@@ -25,7 +24,6 @@
         head.appendChild(puterJS);
     }
 
-    // 2. 加载资源
     let airports = {};
     try {
         let data = GM_getResourceText("airports");
@@ -49,11 +47,9 @@
     let controllers = {};
     let context = {};
 
-    // 3. 创建外部独立聊天框 UI 与切换按钮
     function createFloatingATCWindow() {
         if (document.getElementById('geofs-ai-atc-panel')) return;
 
-        // 创建主面板
         const panel = document.createElement('div');
         panel.id = 'geofs-ai-atc-panel';
         panel.style = `
@@ -63,7 +59,6 @@
             display: flex; flex-direction: column; overflow: hidden; resize: both;
         `;
 
-        // 面板头部（支持拖拽）
         const header = document.createElement('div');
         header.id = 'geofs-ai-atc-header';
         header.style = `
@@ -74,7 +69,6 @@
         header.innerHTML = `<span>📻 AI ATC RADIO</span><span id="atc-freq-display" style="color:#aaa; font-size:11px;">[UNTUNED]</span>`;
         panel.appendChild(header);
 
-        // 聊天记录滚动区（高度自适应）
         const log = document.createElement('div');
         log.id = 'atc-chat-log';
         log.style = `
@@ -84,7 +78,6 @@
         log.innerHTML = `<div style="color: #777;">* Set frequency to contact local tower *</div>`;
         panel.appendChild(log);
 
-        // 控制区（固定的底部组件）
         const controls = document.createElement('div');
         controls.style = `padding: 10px; display: flex; flex-direction: column; gap: 8px; background: #1a1a1a; flex-shrink: 0;`;
         controls.innerHTML = `
@@ -100,7 +93,6 @@
         panel.appendChild(controls);
         document.body.appendChild(panel);
 
-        // ✨ 新增：创建 UI 切换/隐藏控制按钮
         const toggleBtn = document.createElement('button');
         toggleBtn.id = 'geofs-ai-atc-toggle';
         toggleBtn.style = `
@@ -115,7 +107,6 @@
         toggleBtn.onmouseout = () => { toggleBtn.style.background = "rgba(20, 20, 20, 0.9)"; };
         document.body.appendChild(toggleBtn);
 
-        // 切换按钮的显示隐藏逻辑
         toggleBtn.addEventListener('click', () => {
             if (panel.style.display === 'none') {
                 panel.style.display = 'flex';
@@ -124,26 +115,21 @@
             }
         });
 
-        // 让窗口可以拖动
         dragElement(panel, header);
 
-        // 获取输入框元素
         const msgInput = document.getElementById('atc-msg-input');
 
-        // 阻止键盘事件冒泡到 GeoFS 游戏本体
         const blockPropagation = (e) => { e.stopPropagation(); };
         msgInput.addEventListener('keydown', blockPropagation);
         msgInput.addEventListener('keyup', blockPropagation);
         msgInput.addEventListener('keypress', blockPropagation);
 
-        // 绑定常规事件
         document.getElementById('atc-btn-tune').addEventListener('click', tuneFrequency);
         document.getElementById('atc-btn-mic').addEventListener('click', startVoiceRecognition);
         document.getElementById('atc-btn-send').addEventListener('click', sendTextTransmission);
         msgInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendTextTransmission(); });
     }
 
-    // 4. UI 拖拽逻辑
     function dragElement(elmnt, header) {
         let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
         header.onmousedown = dragMouseDown;
@@ -164,7 +150,6 @@
         function closeDragElement() { document.onmouseup = null; document.onmousemove = null; }
     }
 
-    // 5. 日志与消息显示
     function logToBox(sender, text, color = "#fff") {
         const log = document.getElementById('atc-chat-log');
         if (log) {
@@ -173,7 +158,6 @@
         }
     }
 
-    // 6. 核心业务逻辑
     function tuneFrequency() {
         let nearestAp = findNearestAirport();
         let defCode = nearestAp ? nearestAp.code : "KJFK";
@@ -228,7 +212,6 @@
         }).catch(() => { logToBox("SYSTEM", "Mic access denied.", "#ff3333"); });
     }
 
-    // 7. 测距与气象导航公式
     function haversine(lat1, lon1, lat2, lon2) {
         const R = 6371; const toRad = (deg) => deg * (Math.PI / 180);
         const dLat = toRad(lat2 - lat1); const dLon = toRad(lon2 - lon1);
@@ -262,7 +245,6 @@
         }
     }
 
-    // 语音系统合成核心
     function atcSpeak(text) {
         let msg = new SpeechSynthesisUtterance(text);
         let voices = window.speechSynthesis.getVoices();
@@ -279,7 +261,6 @@
         window.speechSynthesis.speak(msg);
     }
 
-    // 8. AI 请求封装
     function callAtc(pilotMsg) {
         let distance = findAirportDistance(tunedInAtc);
         let controller = controllers[tunedInAtc] || { name: { first: "Air", last: "Traffic" } };
@@ -326,7 +307,6 @@
         }
     }
 
-    // 9. 循环检测初始化
     let checkInterval = setInterval(() => {
         if (typeof unsafeWindow.geofs !== 'undefined' && unsafeWindow.geofs.aircraft && unsafeWindow.geofs.aircraft.instance) {
             clearInterval(checkInterval);
