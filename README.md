@@ -1,5 +1,3 @@
-Here is a comprehensive description formatted for upload to GreasyFork, GitHub, or OpenUserJS.
-
 📻 GeoFS AI (GPT) ATC Addon
 Transform your GeoFS flying experience with an intelligent, context-aware AI Air Traffic Control powered by Puter.ai (GPT). Interact with local tower controllers via text or voice, receive realistic speech readbacks, and keep your flight screen clean with a fully customizable floating interface.
 
