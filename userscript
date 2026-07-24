@@ -3,7 +3,7 @@
 // @namespace    https://avramovic.info/
 // @version      1.5.0
 // @description  AI ATC for GeoFS with blocked keybinds, scalable UI, pilot voice feedback, and a UI toggle button.
-// @author       Nemanja Avramovic & AI Refiner
+// @author       Rea-l37
 // @license      MIT
 // @match        https://geo-fs.com/geofs.php*
 // @match        https://*.geo-fs.com/geofs.php*
